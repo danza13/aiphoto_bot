@@ -11,7 +11,7 @@ import hashlib
 from uuid import uuid4
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import (
     ReplyKeyboardMarkup, KeyboardButton,
@@ -62,7 +62,6 @@ def save_json(path, data):
     with open(path, 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
-# — users.json —
 def ensure_user(uid, referrer=None):
     users = load_json(USERS_FILE)
     if uid not in users:
@@ -79,7 +78,6 @@ def change_balance(uid, delta):
     users[uid]['balance'] += delta
     save_json(USERS_FILE, users)
 
-# — payments.json —
 def record_payment(order_ref, uid, amount):
     pays = load_json(PAYMENTS_FILE)
     pays[order_ref] = {'user_id': uid, 'amount': amount}
@@ -101,6 +99,10 @@ def make_signature(fields: list) -> str:
 # =============================================
 # БЛОК 5: FastAPI-ендпоінти
 # =============================================
+@app.get("/")
+async def root():
+    return RedirectResponse("https://t.me/PhotoAI_UA_bot")
+
 @app.get("/pay", response_class=HTMLResponse)
 async def pay_page(order_ref: str, amount: float):
     """Сторінка WebApp: автосабміт форми WayForPay"""
@@ -142,7 +144,6 @@ async def pay_page(order_ref: str, amount: float):
 @app.post("/wfp-callback")
 async def wfp_callback(req: Request):
     data = await req.json()
-    # перевірка підпису
     sig = make_signature([
         data['merchantAccount'], data['orderReference'],
         data['amount'], data['currency'],
@@ -151,33 +152,44 @@ async def wfp_callback(req: Request):
     ])
     ok = sig == data.get('merchantSignature') and data['transactionStatus']=='Approved'
     status = 'accept' if ok else 'reject'
-    # формуємо відповідь WayForPay
     answer = {
         'orderReference': data['orderReference'],
         'status': status,
         'time': int(time.time()),
         'signature': make_signature([data['orderReference'], status, int(time.time())])
     }
-
     if not ok:
         return answer
 
-    # успішно: знаходимо замовлення
     rec = pop_payment(data['orderReference'])
-    if not rec:
-        return answer  # замовлення не знайдено
-
-    uid    = str(rec['user_id'])
-    amount = float(rec['amount'])
-    # нараховуємо баланс
-    change_balance(uid, amount)
-    # бонус рефереру
-    users = load_json(USERS_FILE)
-    ref = users[uid]['referrer']
-    if ref:
-        change_balance(str(ref), amount * 0.1)
+    if rec:
+        uid    = str(rec['user_id'])
+        amount = float(rec['amount'])
+        change_balance(uid, amount)
+        users = load_json(USERS_FILE)
+        ref = users[uid]['referrer']
+        if ref:
+            change_balance(str(ref), amount * 0.1)
 
     return answer
+
+# — Додаємо GET і POST для /return —
+@app.get("/return", response_class=HTMLResponse)
+async def return_get():
+    return """
+    <html><body>
+      <h1>Дякуємо! Платіж успішний.</h1>
+      <script>
+        if (window.Telegram && window.Telegram.WebApp) {
+          window.Telegram.WebApp.close();
+        }
+      </script>
+    </body></html>
+    """
+
+@app.post("/return", response_class=HTMLResponse)
+async def return_post(req: Request):
+    return await return_get()
 
 # ======================================
 # БЛОК 6: Клавіатури
@@ -232,12 +244,16 @@ async def process_amount(msg: types.Message, state: FSMContext):
     except ValueError:
         return await msg.answer("Будь ласка, введіть коректну суму.")
     order_ref = str(uuid4())
-    # зберігаємо замовлення
     record_payment(order_ref, msg.from_user.id, amount)
-    # лінк на WebApp
+
+    # — ЗМІНИЛИ: додаємо url=wa_url для fallback на десктопі —
     wa_url = f"{WFP_DOMAIN}/pay?order_ref={order_ref}&amount={amount}"
     kb = InlineKeyboardMarkup().add(
-        InlineKeyboardButton("Оплатити баланс", web_app=WebAppInfo(url=wa_url))
+        InlineKeyboardButton(
+            "Оплатити баланс",
+            web_app=WebAppInfo(url=wa_url),
+            url=wa_url
+        )
     )
     await msg.answer("Натисніть кнопку, щоб відкрити оплату:", reply_markup=kb)
     await state.finish()
