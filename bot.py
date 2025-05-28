@@ -32,7 +32,7 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(bot, storage=MemoryStorage())
 app = FastAPI()
 
-USERS_FILE = 'users.json'
+USERS_FILE = os.getenv('USERS_FILE_PATH', '/data/users.json')
 
 # ======================
 # БЛОК 2: Стани FSM
