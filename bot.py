@@ -15,7 +15,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import (
     ReplyKeyboardMarkup, KeyboardButton,
-    InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
+    WebAppInfo
 )
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from aiogram.dispatcher import FSMContext
@@ -31,9 +31,9 @@ BOT_TOKEN = os.getenv('TELEGRAM_TOKEN')
 # WayForPay & ваш домен
 WFP_ACCOUNT     = os.getenv('WFP_MERCHANT_ACCOUNT')
 WFP_SECRET      = os.getenv('WFP_SECRET_KEY')
-WFP_DOMAIN      = os.getenv('WFP_DOMAIN')            # https://aiphoto-bot.onrender.com
-WFP_CALLBACK    = os.getenv('WFP_CALLBACK_URL')      # https://…/wfp-callback
-RETURN_URL      = os.getenv('WFP_RETURN_URL')        # https://…/return
+WFP_DOMAIN      = os.getenv('WFP_DOMAIN')
+WFP_CALLBACK    = os.getenv('WFP_CALLBACK_URL')
+RETURN_URL      = os.getenv('WFP_RETURN_URL')
 
 # Зберігання
 USERS_FILE    = os.getenv('USERS_FILE_PATH',    '/data/users.json')
@@ -105,7 +105,6 @@ async def root():
 
 @app.get("/pay", response_class=HTMLResponse)
 async def pay_page(order_ref: str, amount: float):
-    """Сторінка WebApp: автосабміт форми WayForPay"""
     params = {
         'merchantAccount':    WFP_ACCOUNT,
         'merchantDomainName': WFP_DOMAIN,
@@ -150,7 +149,7 @@ async def wfp_callback(req: Request):
         data['authCode'], data['cardPan'],
         data['transactionStatus'], data['reasonCode']
     ])
-    ok = sig == data.get('merchantSignature') and data['transactionStatus']=='Approved'
+    ok = sig == data.get('merchantSignature') and data['transactionStatus'] == 'Approved'
     status = 'accept' if ok else 'reject'
     answer = {
         'orderReference': data['orderReference'],
@@ -173,7 +172,6 @@ async def wfp_callback(req: Request):
 
     return answer
 
-# — Додаємо GET і POST для /return —
 @app.get("/return", response_class=HTMLResponse)
 async def return_get():
     return """
@@ -207,9 +205,9 @@ def kb_balance():
     kb.add(KeyboardButton("🔙 Назад"))
     return kb
 
-def kb_back():
+def kb_recharge_form(url: str):
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.add(KeyboardButton("🔙 Повернутися в меню"))
+    kb.add(KeyboardButton("Форма для поповнення", web_app=WebAppInfo(url=url)))
     return kb
 
 # =====================================
@@ -223,16 +221,16 @@ async def cmd_start(msg: types.Message):
     ensure_user(str(msg.from_user.id), referrer=ref)
     await msg.answer("Ласкаво просимо! Оберіть дію:", reply_markup=kb_main())
 
-@dp.message_handler(lambda m: m.text=="💰 Мій баланс")
+@dp.message_handler(lambda m: m.text == "💰 Мій баланс")
 async def show_balance(msg: types.Message):
     u = load_json(USERS_FILE)[str(msg.from_user.id)]
     await msg.answer(f"Ваш баланс: {u['balance']} грн", reply_markup=kb_balance())
 
-@dp.message_handler(lambda m: m.text=="🔙 Назад")
+@dp.message_handler(lambda m: m.text == "🔙 Назад")
 async def back_to_main(msg: types.Message):
     await msg.answer("Головне меню:", reply_markup=kb_main())
 
-@dp.message_handler(lambda m: m.text=="➕ Поповнити баланс")
+@dp.message_handler(lambda m: m.text == "➕ Поповнити баланс")
 async def topup_start(msg: types.Message):
     await Session.waiting_amount.set()
     await msg.answer("Введіть суму для поповнення (UAH):", reply_markup=types.ReplyKeyboardRemove())
@@ -246,19 +244,15 @@ async def process_amount(msg: types.Message, state: FSMContext):
     order_ref = str(uuid4())
     record_payment(order_ref, msg.from_user.id, amount)
 
-    # — ЗМІНИЛИ: додаємо url=wa_url для fallback на десктопі —
     wa_url = f"{WFP_DOMAIN}/pay?order_ref={order_ref}&amount={amount}"
-    kb = InlineKeyboardMarkup().add(
-        InlineKeyboardButton(
-            "Оплатити баланс",
-            web_app=WebAppInfo(url=wa_url),
-            url=wa_url
-        )
+    # Надсилаємо повідомлення із WebApp-кнопкою
+    await msg.answer(
+        "Відкрийте форму для поповнення:",
+        reply_markup=kb_recharge_form(wa_url)
     )
-    await msg.answer("Натисніть кнопку, щоб відкрити оплату:", reply_markup=kb)
     await state.finish()
 
-@dp.message_handler(lambda m: m.text=="🤝 Реферальна програма")
+@dp.message_handler(lambda m: m.text == "🤝 Реферальна програма")
 async def referral(msg: types.Message):
     u = load_json(USERS_FILE)[str(msg.from_user.id)]
     await msg.answer(
@@ -267,7 +261,7 @@ async def referral(msg: types.Message):
         reply_markup=kb_main()
     )
 
-@dp.message_handler(lambda m: m.text=="🔙 Повернутися в меню")
+@dp.message_handler(lambda m: m.text == "🔙 Повернутися в меню")
 async def back_from_payment(msg: types.Message):
     await msg.answer("Головне меню:", reply_markup=kb_main())
 
